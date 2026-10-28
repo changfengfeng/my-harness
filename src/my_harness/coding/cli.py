@@ -56,6 +56,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--system-prompt", help="replace the default system prompt")
     p.add_argument("--append-system-prompt", help="text appended to the system prompt")
     p.add_argument("--cwd", type=Path, default=Path.cwd(), help="working directory for tools")
+    p.add_argument(
+        "--code",
+        action="store_true",
+        help="add code-intelligence tools (code_search, find_symbol, find_references, related_code, repo_map, "
+        "locate_code) backed by a persistent index of the repository",
+    )
     return p.parse_args(argv)
 
 
@@ -121,6 +127,12 @@ class Renderer:
 def build_agent(args: argparse.Namespace, model: Model, session: SessionManager | None) -> Agent:
     cwd = args.cwd.resolve()
     tools = create_tools(cwd, [t.strip() for t in args.tools.split(",") if t.strip()])
+    holder: list[Agent] = []
+    if getattr(args, "code", False):
+        from ..codeintel import CodeIntel, LocateCodeTool, create_code_tools
+
+        intel = CodeIntel(cwd)
+        tools += [*create_code_tools(intel), LocateCodeTool(intel, lambda: holder[0].state.model)]
     prompt = build_system_prompt(cwd, tools, args.system_prompt, args.append_system_prompt)
     agent = Agent(
         model,
@@ -129,6 +141,7 @@ def build_agent(args: argparse.Namespace, model: Model, session: SessionManager 
         thinking=args.thinking,
         messages=session.messages() if session else [],
     )
+    holder.append(agent)
     if session:
 
         def persist(event: AgentEvent) -> None:

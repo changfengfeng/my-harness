@@ -109,6 +109,39 @@ Secrets are removed from the process environment after startup, shell commands g
 server marks itself non-dumpable so `/proc/1/environ` and `/proc/1/mem` are unreadable to the agent's commands.
 Expose it publicly with any reverse proxy or tunnel, e.g. `cloudflared tunnel --url http://localhost:8000`.
 
+## Code intelligence (large repositories)
+
+`my_harness.codeintel` lets an agent find code in repositories with hundreds of thousands of lines without
+reading them file by file:
+
+- **Index** (`CodeIndex`): one SQLite file per repo under `~/.my-harness/index/`. Files come from
+  `git ls-files` (respects `.gitignore`), are parsed in parallel and refreshed incrementally by mtime/size.
+  Python is parsed with `ast`; JS/TS, Go, Java, Kotlin, Scala, C#, Rust, C/C++, PHP, Ruby, Swift, Dart, Lua,
+  shell, SQL, proto and Markdown use a dependency-free pattern + brace/indent parser. Each file and symbol
+  (class / function / method / type ... with line range, signature, doc comment) becomes a chunk with its
+  identifier references; imports are resolved to repo files and a PageRank over the import/reference graph
+  gives each file a centrality score.
+- **Search** (`CodeQueries`): FTS5/BM25 over names, paths, signatures, docs and bodies, with identifiers split
+  (`handleUserLogin` -> handle user login), light stemming, CJK bigrams, and re-ranking by term coverage,
+  name matches, centrality, symbol kind and a test-file penalty.
+- **Relations**: definitions, references, callers, callees, subclasses/implementations, imports, importers and
+  related tests of a symbol, file or `path:line`; an Aider-style repo map.
+- **Agent tools**: `code_search`, `find_symbol`, `find_references`, `related_code`, `repo_map`, plus
+  `locate_code`, a read-only sub-agent (own context, index tools + read/grep/ls) that turns a request in any
+  language into primary locations, related code and a short explanation.
+
+```bash
+uv run myh --code                                   # main agent with all code tools
+uv run myh-code index                               # build / refresh the index of cwd
+uv run myh-code search csrf token validation        # ranked search (also: symbol, refs, related, map)
+uv run myh-code related CsrfViewMiddleware._check_token
+OPENAI_API_KEY=$LLM_API_KEY uv run myh-code locate "登录失败时在哪里校验密码？" \
+    -m openai:deepseek-chat --base-url https://api.deepseek.com/v1
+```
+
+Measured on this VM: Django (3.6k files, 577k lines) indexes in ~5.4 s (94 MB index), a no-change refresh
+takes ~0.1 s, queries take 20-90 ms; pi-mono (2.3k files, 547k lines, mostly TypeScript) indexes in ~3.9 s.
+
 ## Development
 
 ```bash

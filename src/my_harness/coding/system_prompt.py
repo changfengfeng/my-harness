@@ -16,6 +16,10 @@ TOOL_GUIDELINES = {
     "edit": "Use edit for precise changes; old_text must match the file exactly.",
     "write": "Use write only for new files or complete rewrites.",
     "grep": "Use grep to search file contents instead of bash grep.",
+    "locate_code": "For 'where is X / what must change for Y' questions on this codebase, call locate_code first "
+    "instead of exploring file by file.",
+    "code_search": "Prefer code_search / find_symbol / find_references / related_code over grep and ls to "
+    "navigate the codebase; fall back to grep for exact strings.",
 }
 
 

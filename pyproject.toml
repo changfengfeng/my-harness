@@ -13,6 +13,7 @@ dependencies = [
 [project.scripts]
 myh = "my_harness.coding.cli:main"
 myh-web = "my_harness.web.server:main"
+myh-code = "my_harness.codeintel.cli:main"
 
 [project.optional-dependencies]
 web = [

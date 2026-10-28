@@ -124,6 +124,8 @@ async def stream_anthropic(
 
     msg = AssistantMessage(provider=model.provider, model=model.id)
     tool_json: dict[int, str] = {}
+    # Anthropic block index -> position in msg.content (unsupported block types are skipped).
+    positions: dict[int, int] = {}
     yield StartEvent(partial=msg)
 
     events = await client.messages.create(**params)
@@ -135,6 +137,8 @@ async def stream_anthropic(
             msg.usage.cache_write = getattr(u, "cache_creation_input_tokens", 0) or 0
         elif ev.type == "content_block_start":
             block = ev.content_block
+            if block.type in ("text", "thinking", "redacted_thinking", "tool_use"):
+                positions[ev.index] = len(msg.content)
             if block.type == "text":
                 msg.content.append(TextContent(text=""))
             elif block.type == "thinking":
@@ -145,7 +149,9 @@ async def stream_anthropic(
                 msg.content.append(ToolCall(id=block.id, name=block.name))
                 tool_json[len(msg.content) - 1] = ""
         elif ev.type == "content_block_delta":
-            idx = len(msg.content) - 1
+            if ev.index not in positions:
+                continue
+            idx = positions[ev.index]
             current = msg.content[idx]
             d = ev.delta
             if d.type == "text_delta" and isinstance(current, TextContent):
@@ -159,7 +165,9 @@ async def stream_anthropic(
             elif d.type == "input_json_delta":
                 tool_json[idx] += d.partial_json
         elif ev.type == "content_block_stop":
-            idx = len(msg.content) - 1
+            if ev.index not in positions:
+                continue
+            idx = positions[ev.index]
             current = msg.content[idx]
             if isinstance(current, ToolCall):
                 call = parse_tool_arguments(current.id, current.name, tool_json.pop(idx, ""))

@@ -100,7 +100,7 @@ class Renderer:
             m = event.message
             self.usage = self.usage + m.usage
             if self.in_thinking:
-                self.write(RESET)
+                self.write(f"{RESET}\n")
                 self.in_thinking = False
             if m.text:
                 self.write("\n")

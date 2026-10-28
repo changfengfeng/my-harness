@@ -57,6 +57,8 @@ class ReadTool(AgentTool[ReadParams]):
             )
         text = path.read_text(encoding="utf-8", errors="replace")
         lines = text.split("\n")
+        if len(lines) > 1 and lines[-1] == "":
+            lines.pop()  # a trailing newline does not start another line
         start = (params.offset or 1) - 1
         if start >= len(lines) and lines != [""]:
             raise ToolError(f"Offset {params.offset} is beyond end of file ({len(lines)} lines)")

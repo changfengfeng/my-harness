@@ -94,3 +94,10 @@ async def test_grep_python_fallback(tmp_path, monkeypatch):
     (tmp_path / "a.py").write_text("Hello\n")
     out = text(await run(tools(tmp_path)["grep"], pattern="hello", ignore_case=True))
     assert out == "a.py:1:Hello"
+
+
+async def test_read_line_count_ignores_trailing_newline(tmp_path):
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\n")
+    result = await run(tools(tmp_path)["read"], path="a.py", limit=2)
+    assert result.details["lines"] == 3
+    assert text(result).endswith("[1 more lines in file. Use offset=3 to continue.]")

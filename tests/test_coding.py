@@ -57,3 +57,24 @@ def test_cli_json_mode_and_session(tmp_path, capsys, faux, monkeypatch):
     faux.push("second")
     assert cli.main(["-m", "faux", "--cwd", str(tmp_path), "-c", "-p", "again"]) == 0
     assert len(faux.requests[-1].messages) == 3
+
+
+def test_latest_skips_sessions_without_messages(tmp_path):
+    used = SessionManager.create(tmp_path, tmp_path / "sessions")
+    used.append_message(UserMessage(content="hi"))
+    SessionManager.create(tmp_path, tmp_path / "sessions").append_model_change("faux:faux", "off")
+    assert SessionManager.latest(tmp_path, tmp_path / "sessions").path == used.path
+
+
+def test_renderer_ends_thinking_line_before_tool_output():
+    import io
+
+    from my_harness.agent.types import MessageEnd, MessageUpdate
+    from my_harness.ai.types import ThinkingContent, ThinkingDeltaEvent
+
+    out = io.StringIO()
+    r = cli.Renderer(out)
+    msg = AssistantMessage(provider="p", model="m", content=[ThinkingContent(thinking="plan")])
+    r(MessageUpdate(message=msg, event=ThinkingDeltaEvent(index=0, delta="plan", partial=msg)))
+    r(MessageEnd(message=msg))
+    assert out.getvalue().endswith("plan" + cli.RESET + "\n")

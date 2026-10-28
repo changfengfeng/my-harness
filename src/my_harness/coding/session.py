@@ -72,7 +72,11 @@ class SessionManager:
     def latest(cls, cwd: Path, session_dir: Path | None = None) -> SessionManager | None:
         directory = session_dir or default_session_dir(cwd)
         files = sorted(directory.glob("*.jsonl")) if directory.is_dir() else []
-        return cls.open(files[-1]) if files else None
+        for path in reversed(files):
+            session = cls.open(path)
+            if session.messages():
+                return session
+        return None
 
     @staticmethod
     def list_files(cwd: Path, session_dir: Path | None = None) -> list[Path]:

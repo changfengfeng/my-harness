@@ -12,6 +12,13 @@ dependencies = [
 
 [project.scripts]
 myh = "my_harness.coding.cli:main"
+myh-web = "my_harness.web.server:main"
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
 
 [dependency-groups]
 dev = [

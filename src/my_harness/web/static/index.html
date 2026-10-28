@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>my-harness</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ee; --dim:#8a93a6; --accent:#6aa7ff; --err:#ff6b6b; --ok:#5fd38d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:16px; margin:0; }
+  header .meta { color:var(--dim); font-size:13px; flex:1; }
+  button { background:#232838; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:7px 14px; cursor:pointer; font:inherit; font-size:14px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#0b1020; border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.45; cursor:default; }
+  #log { flex:1; overflow-y:auto; padding:20px 0; }
+  .wrap { max-width:860px; margin:0 auto; padding:0 18px; }
+  .msg { margin:14px 0; }
+  .user { background:#1d2433; border:1px solid #2b3550; border-radius:12px; padding:10px 14px; white-space:pre-wrap; margin-left:15%; }
+  .assistant { white-space:pre-wrap; word-wrap:break-word; }
+  .thinking { color:var(--dim); font-size:13px; border-left:2px solid var(--line); padding:2px 10px; white-space:pre-wrap; margin:8px 0; }
+  .thinking summary { cursor:pointer; }
+  .tool { border:1px solid var(--line); border-radius:10px; background:var(--panel); margin:8px 0; font-size:13px; }
+  .tool summary { cursor:pointer; padding:8px 12px; font-family:ui-monospace,Menlo,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tool .name { color:var(--accent); font-weight:600; }
+  .tool .status { float:right; color:var(--dim); }
+  .tool.err .status { color:var(--err); } .tool.done .status { color:var(--ok); }
+  .tool pre { margin:0; padding:10px 12px; border-top:1px solid var(--line); max-height:360px; overflow:auto; white-space:pre-wrap; font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .error { color:var(--err); font-size:14px; }
+  .note { color:var(--dim); font-size:13px; text-align:center; }
+  pre.code { background:#0b0d12; border:1px solid var(--line); border-radius:8px; padding:10px 12px; overflow:auto; white-space:pre; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
+  code.inline { background:#232838; border-radius:4px; padding:1px 5px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
+  footer { border-top:1px solid var(--line); background:var(--panel); padding:12px 0; }
+  footer .wrap { display:flex; gap:10px; align-items:flex-end; }
+  textarea { flex:1; resize:none; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; min-height:46px; max-height:200px; }
+  textarea:focus { outline:none; border-color:var(--accent); }
+  #login { position:fixed; inset:0; background:var(--bg); display:none; align-items:center; justify-content:center; }
+  #login form { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:28px; width:320px; display:flex; flex-direction:column; gap:12px; }
+  #login input { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:10px; font:inherit; }
+  .empty { color:var(--dim); text-align:center; margin-top:18vh; }
+  .empty b { color:var(--text); font-size:20px; display:block; margin-bottom:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>my-harness</h1>
+  <span class="meta" id="meta">连接中…</span>
+  <button id="newBtn" title="清空对话，重新开始">新对话</button>
+</header>
+<div id="log"><div class="wrap" id="msgs">
+  <div class="empty" id="empty"><b>Python 写的 coding agent</b>它可以在一个临时工作目录里读写文件、执行命令。<br>试试：“写一个 Python 脚本算斐波那契数列前 20 项并运行”</div>
+</div></div>
+<footer><div class="wrap">
+  <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+  <button id="stopBtn" disabled>停止</button>
+  <button id="sendBtn" class="primary">发送</button>
+</div></footer>
+<div id="login"><form id="loginForm">
+  <h2 style="margin:0">my-harness</h2>
+  <span style="color:var(--dim);font-size:13px">请输入访问密码</span>
+  <input type="password" id="pw" autocomplete="current-password" autofocus>
+  <span class="error" id="loginErr"></span>
+  <button class="primary" type="submit">进入</button>
+</form></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const msgs = $("msgs"), log = $("log"), input = $("input");
+let ws = null, busy = false, cur = null, tools = {};
+
+function esc(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function render(text) {
+  const parts = text.split(/```/);
+  return parts.map((p, i) => {
+    if (i % 2) { const nl = p.indexOf("\n"); return `<pre class="code">${esc(nl >= 0 ? p.slice(nl + 1) : p)}</pre>`; }
+    return esc(p).replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>').replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  }).join("");
+}
+function stick() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
+function add(el) { const s = stick(); $("empty")?.remove(); msgs.appendChild(el); if (s) log.scrollTop = log.scrollHeight; return el; }
+function div(cls, html) { const d = document.createElement("div"); d.className = "msg " + cls; if (html !== undefined) d.innerHTML = html; return d; }
+function setBusy(b) { busy = b; $("stopBtn").disabled = !b; $("sendBtn").textContent = b ? "追加" : "发送"; }
+
+function ensure(kind) {
+  if (!cur || cur.kind !== kind) {
+    if (kind === "thinking") {
+      const d = document.createElement("details"); d.className = "msg thinking"; d.open = true;
+      d.innerHTML = "<summary>思考</summary><span></span>"; add(d); cur = { kind, el: d.querySelector("span"), raw: "" };
+    } else { const d = add(div("assistant")); cur = { kind, el: d, raw: "" }; }
+  }
+  return cur;
+}
+function handle(e) {
+  const s = stick();
+  switch (e.t) {
+    case "ready": $("meta").textContent = `${e.model} · 工作目录 ${e.workspace}`; break;
+    case "agent_start": setBusy(true); break;
+    case "agent_end": setBusy(false); cur = null; break;
+    case "text": { const c = ensure("text"); c.raw += e.d; c.el.innerHTML = render(c.raw); break; }
+    case "thinking": { const c = ensure("thinking"); c.raw += e.d; c.el.textContent = c.raw; break; }
+    case "assistant_end":
+      if (cur && cur.kind === "thinking") cur.el.parentElement.open = false;
+      cur = null;
+      if (e.error) add(div("error", esc(`[${e.stop_reason}] ${e.error}`)));
+      break;
+    case "tool_start": {
+      const d = document.createElement("details"); d.className = "msg tool";
+      d.innerHTML = `<summary><span class="status">运行中…</span><span class="name">${esc(e.name)}</span> ${esc(JSON.stringify(e.args))}</summary><pre></pre>`;
+      add(d); tools[e.id] = d; cur = null; break;
+    }
+    case "tool_end": {
+      const d = tools[e.id]; if (!d) break;
+      d.classList.add(e.is_error ? "err" : "done");
+      d.querySelector(".status").textContent = e.is_error ? "失败" : "完成";
+      d.querySelector("pre").textContent = e.text || "(无输出)";
+      if (e.is_error) d.open = true;
+      break;
+    }
+    case "error": add(div("error", esc(e.error))); setBusy(false); break;
+    case "reset": msgs.innerHTML = ""; add(div("note", "已开始新对话")); cur = null; tools = {}; setBusy(false); break;
+  }
+  if (s) log.scrollTop = log.scrollHeight;
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (m) => handle(JSON.parse(m.data));
+  ws.onclose = (ev) => {
+    setBusy(false);
+    if (ev.code === 4401) { showLogin(); return; }
+    $("meta").textContent = ev.code === 4429 ? "在线人数已满，请稍后再试" : "连接已断开，3 秒后重连（之前的对话和文件会丢失）";
+    setTimeout(connect, 3000);
+  };
+}
+function send() {
+  const text = input.value.trim();
+  if (!text || !ws || ws.readyState !== 1) return;
+  add(div("user", esc(text))); cur = null;
+  ws.send(JSON.stringify({ type: "prompt", text }));
+  input.value = ""; input.style.height = "";
+}
+function showLogin() { $("login").style.display = "flex"; $("pw").focus(); }
+
+$("sendBtn").onclick = send;
+$("stopBtn").onclick = () => ws && ws.send(JSON.stringify({ type: "abort" }));
+$("newBtn").onclick = () => ws && ws.send(JSON.stringify({ type: "reset" }));
+input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+input.addEventListener("input", () => { input.style.height = ""; input.style.height = Math.min(input.scrollHeight, 200) + "px"; });
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("pw").value }) });
+  if (r.ok) { $("login").style.display = "none"; connect(); } else { $("loginErr").textContent = (await r.json()).error || "登录失败"; }
+};
+fetch("/api/config").then((r) => r.json()).then((c) => { $("meta").textContent = c.model; c.needs_login ? showLogin() : connect(); });
+</script>
+</body>
+</html>

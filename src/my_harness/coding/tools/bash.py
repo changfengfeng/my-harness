@@ -27,8 +27,9 @@ class BashTool(AgentTool[BashParams]):
     )
     Params = BashParams
 
-    def __init__(self, cwd: Path):
+    def __init__(self, cwd: Path, env: dict[str, str] | None = None):
         self.cwd = cwd
+        self.env = env
 
     async def execute(
         self, call_id: str, params: BashParams, signal: asyncio.Event, on_update: UpdateCallback | None = None
@@ -38,6 +39,7 @@ class BashTool(AgentTool[BashParams]):
             "-c",
             params.command,
             cwd=self.cwd,
+            env=self.env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,

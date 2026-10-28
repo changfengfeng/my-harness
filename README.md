@@ -78,6 +78,37 @@ class Weather(AgentTool[Params]):
         return AgentToolResult.text(f"Sunny in {params.city}")
 ```
 
+## Web app
+
+`myh-web` serves a browser chat UI (FastAPI + WebSocket) that streams the agent's thinking, tool calls and
+results live. Every browser tab gets its own Agent and a throwaway workspace directory that is deleted on
+disconnect; access is protected by a shared password.
+
+```
+uv sync --extra web
+MYH_WEB_PASSWORD=... MYH_WEB_API_KEY=sk-... uv run myh-web     # http://localhost:8000, DeepSeek by default
+```
+
+| Variable | Default | |
+|---|---|---|
+| `MYH_WEB_PASSWORD` | (required) | set `MYH_WEB_OPEN=1` to run without one |
+| `MYH_WEB_MODEL` | `openai:deepseek-chat` | any `provider:model` |
+| `MYH_WEB_BASE_URL` | DeepSeek URL for `deepseek-*` models | OpenAI-compatible endpoint |
+| `MYH_WEB_API_KEY` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | |
+| `MYH_WEB_MAX_SESSIONS` | `10` | concurrent connections |
+
+The agent can run arbitrary shell commands, so run it in the container rather than on a machine you care about:
+
+```
+docker build -t my-harness-web .
+docker run -d -p 8000:8000 -e MYH_WEB_PASSWORD -e MYH_WEB_API_KEY \
+  --memory 1g --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges my-harness-web
+```
+
+Secrets are removed from the process environment after startup, shell commands get a minimal environment, and the
+server marks itself non-dumpable so `/proc/1/environ` and `/proc/1/mem` are unreadable to the agent's commands.
+Expose it publicly with any reverse proxy or tunnel, e.g. `cloudflared tunnel --url http://localhost:8000`.
+
 ## Development
 
 ```bash

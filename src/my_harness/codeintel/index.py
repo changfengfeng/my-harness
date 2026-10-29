@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS symbols(
     id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL, name TEXT NOT NULL, qualname TEXT, kind TEXT,
     start INTEGER, end INTEGER, line INTEGER, signature TEXT, doc TEXT, parent_id INTEGER);
 CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS symbols_name_exact ON symbols(name);
 CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id);
 CREATE INDEX IF NOT EXISTS symbols_parent ON symbols(parent_id);
 CREATE TABLE IF NOT EXISTS refs(

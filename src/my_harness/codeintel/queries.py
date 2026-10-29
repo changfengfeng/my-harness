@@ -18,6 +18,7 @@ KIND_WEIGHT = {
     "module": 0.9, "variable": 0.8, "file": 0.75, "section": 0.6,
 }  # fmt: skip
 DEF_KIND_ORDER = "CASE s.kind WHEN 'class' THEN 0 WHEN 'interface' THEN 0 WHEN 'function' THEN 1 WHEN 'method' THEN 1 WHEN 'type' THEN 2 WHEN 'file' THEN 9 ELSE 3 END"
+VENDORED_RE = re.compile(r"(^|/)(vendor|third_party|node_modules)/")
 SYMBOL_COLS = (
     "s.id, s.file_id, s.name, s.qualname, s.kind, s.start, s.end, s.line, s.signature, s.doc, s.parent_id, "
     "f.path, f.lang, f.is_test, f.rank"
@@ -144,6 +145,7 @@ class CodeQueries:
         )
         if include_tests is False:
             where += " AND f.is_test = 0"
+        wants_vendored = bool(path and VENDORED_RE.search(path.rstrip("/") + "/"))
         rows = self.index.query(
             f"""SELECT {SYMBOL_COLS}, bm25(symbols_fts, 8.0, 3.0, 4.0, 2.0, 1.0) AS bm,
                        symbols_fts.name AS t_name, symbols_fts.path AS t_path, symbols_fts.signature AS t_sig,
@@ -170,6 +172,8 @@ class CodeQueries:
                 score *= 0.35
             if r["lang"] in NON_CODE:
                 score *= 0.6
+            if not wants_vendored and VENDORED_RE.search(r["path"]):
+                score *= 0.4
             candidates[r["id"]] = _hit(r, score)
         # exact identifiers in the query ("CsrfViewMiddleware", "process_view") get a strong boost
         top = max((h.score for h in candidates.values()), default=1.0)

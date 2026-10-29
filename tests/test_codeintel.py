@@ -278,7 +278,7 @@ def test_locate_code_subagent(repo: Path, tmp_path: Path, faux) -> None:
     result = asyncio.run(
         tool.execute(
             "1",
-            tool.Params(request="用户登录时在哪里校验密码？"),
+            tool.Params(request="用户登录时在哪里校验密码？", mode="deep"),
             asyncio.Event(),
             lambda r: updates.append(r.content[0].text),
         )
@@ -302,3 +302,48 @@ def test_cli_code_flag_adds_tools(repo: Path, tmp_path: Path, faux) -> None:
     names_ = {t.name for t in agent.state.tools}
     assert {"read", "code_search", "related_code", "locate_code"} <= names_
     assert "locate_code" in agent.state.system_prompt
+
+
+def test_locate_fast_mode(repo: Path, tmp_path: Path, faux) -> None:
+    from my_harness.ai import get_model
+    from my_harness.codeintel.locator import locate
+
+    faux.push(
+        '{"queries": ["login password check"], "identifiers": ["check_password"]}',
+        "## Primary locations\n- `app/auth.py:17-21` `Authenticator.login`",
+    )
+    intel = CodeIntel(repo, tmp_path / "fast.db")
+    report = asyncio.run(locate(intel, get_model("faux"), "用户登录时在哪里校验密码？", mode="fast"))
+    assert "Authenticator.login" in report
+    expand, pick = faux.requests[:2]
+    assert not expand.tools and "JSON" in expand.system_prompt
+    listing = str(pick.messages[-1])
+    assert "check_password" in listing and "app/auth.py" in listing
+
+
+def test_locate_auto_seeds_agent_with_candidates(repo: Path, tmp_path: Path, faux) -> None:
+    from my_harness.ai import get_model
+    from my_harness.codeintel.locator import locate
+
+    faux.push(
+        '{"queries": ["login password"], "identifiers": ["check_password"]}',
+        "## Primary locations\n- `app/auth.py:17-21` `Authenticator.login`",
+    )
+    intel = CodeIntel(repo, tmp_path / "auto.db")
+    report = asyncio.run(locate(intel, get_model("faux"), "where is the password checked?", mode="auto"))
+    assert "Authenticator.login" in report
+    assert len(faux.requests) == 2
+    agent_req = faux.requests[1]
+    assert agent_req.tools and "Index candidates" in str(agent_req.messages[-1])
+    assert "check_password" in str(agent_req.messages[-1])
+
+
+def test_search_demotes_vendored_code(tmp_path: Path) -> None:
+    for d in ("vendor/lib", "pkg"):
+        (tmp_path / d).mkdir(parents=True)
+    body = "def retry_backoff(attempts):\n    return attempts * 2\n"
+    (tmp_path / "vendor/lib/retry.py").write_text(body)
+    (tmp_path / "pkg/retry.py").write_text(body)
+    q = CodeIntel(tmp_path, tmp_path / "v.db").ready_sync()
+    assert q.search("retry backoff")[0].path == "pkg/retry.py"
+    assert q.search("retry backoff", path="vendor")[0].path == "vendor/lib/retry.py"

@@ -128,7 +128,10 @@ reading them file by file:
   related tests of a symbol, file or `path:line`; an Aider-style repo map.
 - **Agent tools**: `code_search`, `find_symbol`, `find_references`, `related_code`, `repo_map`, plus
   `locate_code`, a read-only sub-agent (own context, index tools + read/grep/ls) that turns a request in any
-  language into primary locations, related code and a short explanation.
+  language into primary locations, related code and a short explanation. Modes (`--mode` / `mode`):
+  `deep` (default, multi-turn, most accurate), `auto` (seeded with fused index candidates, at most 6 turns,
+  fewer tokens) and `fast` (two model calls around the index, a few seconds, noticeably less accurate).
+  Vendored code (`vendor/`, `third_party/`, `node_modules/`) is ranked lower unless the search is scoped to it.
 
 ```bash
 uv run myh --code                                   # main agent with all code tools

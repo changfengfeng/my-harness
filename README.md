@@ -129,8 +129,8 @@ reading them file by file:
 - **Agent tools**: `code_search`, `find_symbol`, `find_references`, `related_code`, `repo_map`, plus
   `locate_code`, a read-only sub-agent (own context, index tools + read/grep/ls) that turns a request in any
   language into primary locations, related code and a short explanation. Modes (`--mode` / `mode`):
-  `deep` (default, multi-turn, most accurate), `auto` (seeded with fused index candidates, at most 6 turns,
-  fewer tokens) and `fast` (two model calls around the index, a few seconds, noticeably less accurate).
+  `deep` (default, multi-turn, most accurate) and `auto` (seeded with fused index candidates, at most 6
+  turns, fewer tokens).
   Vendored code (`vendor/`, `third_party/`, `node_modules/`) is ranked lower unless the search is scoped to it.
 
 ```bash

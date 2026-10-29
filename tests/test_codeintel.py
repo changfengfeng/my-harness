@@ -304,23 +304,6 @@ def test_cli_code_flag_adds_tools(repo: Path, tmp_path: Path, faux) -> None:
     assert "locate_code" in agent.state.system_prompt
 
 
-def test_locate_fast_mode(repo: Path, tmp_path: Path, faux) -> None:
-    from my_harness.ai import get_model
-    from my_harness.codeintel.locator import locate
-
-    faux.push(
-        '{"queries": ["login password check"], "identifiers": ["check_password"]}',
-        "## Primary locations\n- `app/auth.py:17-21` `Authenticator.login`",
-    )
-    intel = CodeIntel(repo, tmp_path / "fast.db")
-    report = asyncio.run(locate(intel, get_model("faux"), "用户登录时在哪里校验密码？", mode="fast"))
-    assert "Authenticator.login" in report
-    expand, pick = faux.requests[:2]
-    assert not expand.tools and "JSON" in expand.system_prompt
-    listing = str(pick.messages[-1])
-    assert "check_password" in listing and "app/auth.py" in listing
-
-
 def test_locate_auto_seeds_agent_with_candidates(repo: Path, tmp_path: Path, faux) -> None:
     from my_harness.ai import get_model
     from my_harness.codeintel.locator import locate

@@ -23,7 +23,7 @@ from ..coding.tools import GrepTool, LsTool, ReadTool
 from .queries import CodeQueries, Hit
 from .tools import CodeIntel, create_code_tools, format_hit
 
-LocateMode = Literal["fast", "deep", "auto"]
+LocateMode = Literal["deep", "auto"]
 
 LOCATOR_PROMPT = """You are a code-location specialist working on a large repository through a pre-built code index.
 Your job: given a request from a user or developer (a feature, a bug, a question, a change they want to make),
@@ -78,20 +78,6 @@ The request may be in any language; code is in English. Reply with JSON only:
   component names, likely function/type words, domain terms, synonyms. Cover different angles.
 - identifiers: up to 6 exact identifier names (functions, types, flags) you would expect to exist."""
 
-PICK_PROMPT = """You are a code-location specialist. You get a request and candidate locations from a ranked
-code index (path:lines, kind, qualified name, signature and the best-matching lines). Pick the code that
-implements what the request is about, i.e. where a change would go. Use only the candidates given.
-
-Answer in the same language as the request, briefly; keep identifiers and paths verbatim:
-## Primary locations
-- `path:start-end` `Symbol` - one line why (1-3 items, most relevant first)
-## Related code
-- `path:start-end` `Symbol` - relationship (caller / callee / config / test ...) (0-5 items)
-## How it fits together
-1-2 sentences.
-
-If none of the candidates plausibly matches, reply with exactly NOT_FOUND and nothing else."""
-
 
 def _parse_expansion(text: str, request: str) -> tuple[list[str], list[str]]:
     m = re.search(r"\{.*\}", text, re.S)
@@ -144,34 +130,6 @@ async def gather_for_request(
     return hits
 
 
-async def fast_locate(
-    intel: CodeIntel,
-    model: Model,
-    request: str,
-    *,
-    options: StreamOptions | None = None,
-    scope: str | None = None,
-) -> str | None:
-    """Two model calls around the index: expand the request into queries, then pick from fused results.
-    Returns None when nothing plausible was found."""
-    hits = await gather_for_request(intel, model, request, options=options, scope=scope)
-    if not hits:
-        return None
-    listing = "\n\n".join(format_hit(h) for h in hits)
-    pick = await complete(
-        model,
-        Context(
-            system_prompt=PICK_PROMPT,
-            messages=[UserMessage(content=f"Request: {request}\n\nCandidates:\n{listing}")],
-        ),
-        (options or StreamOptions()).model_copy(update={"max_tokens": 900, "thinking": "off"}),
-    )
-    if pick.stop_reason == "error":
-        raise RuntimeError(pick.error_message or "candidate selection failed")
-    text = pick.text.strip()
-    return None if not text or text.startswith("NOT_FOUND") else text
-
-
 async def locate(
     intel: CodeIntel,
     model: Model,
@@ -184,14 +142,8 @@ async def locate(
     on_event: Callable[[AgentEvent], Any] | None = None,
     mode: LocateMode = "deep",
 ) -> str:
-    """Locate code for `request`. "fast": two model calls around the index (a few seconds);
-    "deep": the multi-turn sub-agent that reads and follows references; "auto": the sub-agent seeded with
-    the fast index candidates and a small turn budget."""
-    if mode == "fast":
-        return (
-            await fast_locate(intel, model, request, options=options, scope=scope)
-            or "No matching code found."
-        )
+    """Locate code for `request`. "deep": the multi-turn sub-agent that reads and follows references;
+    "auto": the same sub-agent seeded with fused index candidates and a small turn budget."""
     seed = ""
     if mode == "auto":
         hits = await gather_for_request(intel, model, request, options=options, scope=scope)
@@ -240,9 +192,8 @@ class LocateCodeParams(BaseModel):
     scope: str | None = Field(default=None, description="Optional directory or component to focus on")
     mode: LocateMode = Field(
         default="deep",
-        description="fast: index lookup + one selection call (a few seconds, less accurate); deep: multi-turn agent "
-        "that reads code and follows references (slowest); auto: the agent seeded with index candidates and a "
-        "small turn budget",
+        description="deep: multi-turn agent that reads code and follows references (most accurate); auto: the "
+        "agent seeded with index candidates and a small turn budget (fewer tokens, slightly faster)",
     )
 
 

@@ -50,7 +50,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     s.add_argument("--thinking", default="off", choices=["off", "low", "medium", "high"])
     s.add_argument("--max-turns", type=int, default=14)
     s.add_argument("--scope")
-    s.add_argument("--mode", default="deep", choices=["fast", "deep", "auto"])
+    s.add_argument("--mode", default="deep", choices=["deep", "auto"])
     s.add_argument("-q", "--quiet", action="store_true", help="do not print tool calls")
     return p.parse_args(argv)
 

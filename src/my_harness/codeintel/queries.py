@@ -79,6 +79,9 @@ def _hit(r: sqlite3.Row, score: float = 0.0) -> Hit:
 _GENERIC_RE = re.compile(r"<[^<>]*>")
 
 
+_JAVA_PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.M)
+
+
 def java_supertypes(signature: str, name: str) -> list[str]:
     """`class Foo<T> extends Base<T> implements a.b.I, J` -> [Base, I, J]."""
     rest = signature.split(name, 1)[-1]
@@ -490,8 +493,8 @@ class CodeQueries:
 
     def _java_inheritors(self, h: Hit, depth: int = 3) -> list[str]:
         """Subtypes of the method's class that inherit it without overriding (calls through them land here).
-        A subtype only counts if its file can see the supertype's file (same file/package or an import),
-        so same-named classes in unrelated packages do not merge."""
+        A subtype only counts if it can see the supertype (same file or package, an import of it or its
+        package, or a qualified extends), so same-named classes in unrelated packages do not merge."""
         rows = self.index.query(
             """SELECT p.id, p.name, f.id AS file_id, f.path FROM symbols s JOIN symbols p ON p.id = s.parent_id
                JOIN files f ON f.id = p.file_id WHERE s.id = ?""",
@@ -499,9 +502,17 @@ class CodeQueries:
         )
         if not rows:
             return []
+        packages: dict[str, str] = {}
+
+        def package(path: str) -> str:
+            if path not in packages:
+                m = _JAVA_PACKAGE_RE.search("\n".join(self.index.read_lines(path)[:200]))
+                packages[path] = m.group(1) if m else ""
+            return packages[path]
+
         seen = {rows[0]["id"]}
         frontier: dict[str, set[tuple[int, str]]] = {
-            rows[0]["name"]: {(rows[0]["file_id"], posixpath.dirname(rows[0]["path"]))}
+            rows[0]["name"]: {(rows[0]["file_id"], package(rows[0]["path"]))}
         }
         out: list[str] = []
         for _ in range(depth):
@@ -515,32 +526,36 @@ class CodeQueries:
                     AND f.lang = 'java' LIMIT 1000""",
                 names,
             )
-            target_files = {fid for locs in frontier.values() for fid, _ in locs}
-            importing: set[tuple[int, int]] = set()
+            imports: dict[int, set[str | int]] = defaultdict(set)
             sub_files = list({r["file_id"] for r in subs})
             for k in range(0, len(sub_files), 400):
                 chunk = sub_files[k : k + 400]
-                importing |= {
-                    (r[0], r[1])
-                    for r in self.index.query(
-                        f"""SELECT file_id, resolved_id FROM imports WHERE file_id IN ({",".join("?" * len(chunk))})
-                            AND resolved_id IS NOT NULL""",
-                        chunk,
-                    )
-                    if r[1] in target_files
-                }
+                for r in self.index.query(
+                    f"SELECT file_id, target, resolved_id FROM imports WHERE file_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ):
+                    imports[r[0]].update(x for x in (r[1], r[2]) if x is not None)
 
             def visible(
                 r: sqlite3.Row,
                 frontier: dict[str, set[tuple[int, str]]] = frontier,
-                importing: set[tuple[int, int]] = importing,
+                imports: dict[int, set[str | int]] = imports,
             ) -> bool:
-                d = posixpath.dirname(r["path"])
-                return any(
-                    fid == r["file_id"] or sd == d or (r["file_id"], fid) in importing
-                    for t in java_supertypes(r["signature"] or "", r["name"])
-                    for fid, sd in frontier.get(t, ())
-                )
+                seen_by = imports.get(r["file_id"], set())
+                sig = r["signature"] or ""
+                for t in java_supertypes(sig, r["name"]):
+                    for fid, pkg in frontier.get(t, ()):
+                        qualified = f"{pkg}.{t}" if pkg else t
+                        if (
+                            fid == r["file_id"]
+                            or fid in seen_by
+                            or qualified in seen_by
+                            or f"{pkg}.*" in seen_by
+                        ):
+                            return True
+                        if (pkg and qualified in sig) or package(r["path"]) == pkg:
+                            return True
+                return False
 
             subs = [r for r in subs if r["id"] not in seen and visible(r)]
             seen.update(r["id"] for r in subs)
@@ -559,7 +574,7 @@ class CodeQueries:
             frontier = defaultdict(set)
             for r in subs:
                 if r["id"] not in overriding:
-                    frontier[r["name"]].add((r["file_id"], posixpath.dirname(r["path"])))
+                    frontier[r["name"]].add((r["file_id"], package(r["path"])))
             out += list(frontier)
         return list(dict.fromkeys(out))[:200]
 

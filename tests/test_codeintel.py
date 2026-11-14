@@ -602,3 +602,21 @@ def test_java_inheritors_ignore_unrelated_same_named_base(tmp_path: Path) -> Non
     target = next(h for h in q.find_symbol("Base.helper") if h.path == "a/Base.java")
     assert q._java_inheritors(target) == ["Sub"]
     assert [c.qualname for c in q.callers(target)[0]] == ["Use.viaSub"]
+
+
+def test_java_inheritors_follow_package_not_directory(tmp_path: Path) -> None:
+    files = {
+        "src/main/a/Base.java": "package a;\nclass Base {\n    void helper() {\n    }\n}\n",
+        "src/test/a/Same.java": "package a;\nclass Same extends Base {\n}\n",
+        "c/Wild.java": "package c;\nimport a.*;\nclass Wild extends Base {\n}\n",
+        "d/Qual.java": "package d;\nclass Qual extends a.Base {\n}\n",
+        "b/Base.java": "package b;\nclass Base {\n    void helper() {\n    }\n}\n",
+        "b/Other.java": "package b;\nclass Other extends Base {\n}\n",
+    }
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
+    target = next(h for h in q.find_symbol("Base.helper") if h.path == "src/main/a/Base.java")
+    assert sorted(q._java_inheritors(target)) == ["Qual", "Same", "Wild"]

@@ -612,6 +612,8 @@ def test_java_inheritors_follow_package_not_directory(tmp_path: Path) -> None:
         "d/Qual.java": "package d;\nclass Qual extends a.Base {\n}\n",
         "b/Base.java": "package b;\nclass Base {\n    void helper() {\n    }\n}\n",
         "b/Other.java": "package b;\nclass Other extends Base {\n}\n",
+        "ba/Base.java": "package ba;\nclass Base {\n    void helper() {\n    }\n}\n",
+        "e/Near.java": "package e;\nclass Near extends ba.Base {\n}\n",
     }
     for rel, text in files.items():
         p = tmp_path / rel

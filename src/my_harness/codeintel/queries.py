@@ -553,7 +553,9 @@ class CodeQueries:
                             or f"{pkg}.*" in seen_by
                         ):
                             return True
-                        if (pkg and qualified in sig) or package(r["path"]) == pkg:
+                        if (pkg and re.search(rf"(?<![\w.]){re.escape(qualified)}\b", sig)) or package(
+                            r["path"]
+                        ) == pkg:
                             return True
                 return False
 

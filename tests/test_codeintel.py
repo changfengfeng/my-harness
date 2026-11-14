@@ -453,3 +453,22 @@ def test_java_self_calls_bind_to_declaring_class(tmp_path: Path) -> None:
     assert [c.qualname for c in q.callers(gcs_write)[0]] == ["GcsStore.upload"]
     helper = q.find_symbol("Base.helper")[0]
     assert [c.qualname for c in q.callers(helper)[0]] == ["AzureStore.write"]
+
+
+def test_java_untyped_receivers_need_visibility(tmp_path: Path) -> None:
+    files = {
+        "a/Methods.java": "package a;\nclass Methods {\n    static Object getMethod(String n) {\n        return n;\n    }\n}\n",
+        "a/Gen.java": 'package a;\nclass Gen {\n    void run() {\n        lookup().getMethod("x");\n    }\n}\n',
+        "b/Probe.java": (
+            'package b;\nclass Probe {\n    void run() {\n        Foo.class.getMethod("x");\n'
+            '        req().getMethod("y");\n    }\n}\n'
+        ),
+        "c/Other.java": "package c;\nclass Other {\n    Object getMethod(String n) {\n        return n;\n    }\n}\n",
+    }
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
+    target = q.find_symbol("Methods.getMethod")[0]
+    assert [c.qualname for c in q.callers(target)[0]] == ["Gen.run"]

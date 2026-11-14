@@ -520,12 +520,28 @@ class CodeQueries:
                 else 0.0
             )
             scored[c.id] = (4.0 + vis + 0.5 * c.rank - (0.5 if c.is_test else 0), c)
+        n_defs = (
+            self.index.query(
+                "SELECT count(DISTINCT file_id) FROM symbols WHERE name = ? AND kind = 'method'", [h.name]
+            )[0][0]
+            if unknown
+            else 0
+        )
         for r in unknown:
             c = _hit(r)
             if c.id in scored:
                 continue
-            vis = 2.0 if c.file_id == h.file_id else 1.0 if c.file_id in importers else 0.0
-            scored[c.id] = (vis + 0.5 * c.rank - (0.5 if c.is_test else 0), c)
+            # An untyped receiver only plausibly targets this method if the name is unique or the
+            # caller can see the declaring file.
+            uvis = (
+                2.0
+                if c.file_id == h.file_id
+                else 1.0
+                if c.file_id in importers or posixpath.dirname(c.path) == same_dir or n_defs <= 1
+                else None
+            )
+            if uvis is not None:
+                scored[c.id] = (uvis + 0.5 * c.rank - (0.5 if c.is_test else 0), c)
         ranked = sorted(scored.values(), key=lambda x: -x[0])
         likely = [c for sc, c in ranked if sc >= 0.9]
         return (likely or [c for _, c in ranked])[:limit], len(scored)

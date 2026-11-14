@@ -342,6 +342,7 @@ class CodeIndex:
                 for r in self.db.execute("SELECT id, path, mtime_ns, size FROM files")
             }
             todo: list[str] = []
+            gone: set[str] = set()
             for rel in current:
                 old = known.get(rel)
                 if force or old is None:
@@ -349,11 +350,12 @@ class CodeIndex:
                     continue
                 try:
                     st = os.stat(self.root / rel)
-                except OSError:
+                except OSError:  # listed by git but deleted from the working tree
+                    gone.add(rel)
                     continue
                 if st.st_mtime_ns != old[1] or st.st_size != old[2]:
                     todo.append(rel)
-            current_set = set(current)
+            current_set = set(current) - gone
             removed = [fid for p, (fid, _, _) in known.items() if p not in current_set]
             if todo or removed:
                 self._delete_files(removed + [known[p][0] for p in todo if p in known])

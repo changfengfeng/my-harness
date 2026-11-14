@@ -242,6 +242,19 @@ def test_git_listing_respects_gitignore(repo: Path, tmp_path: Path) -> None:
     assert "app/auth.py" in paths and "secret/keys.py" not in paths
 
 
+def test_deleted_tracked_file_is_removed(repo: Path, tmp_path: Path) -> None:
+    if subprocess.run(["git", "--version"], capture_output=True).returncode != 0:
+        pytest.skip("git not available")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    idx = CodeIndex(repo, tmp_path / "git.db")
+    idx.refresh()
+    (repo / "app" / "auth.py").unlink()
+    assert idx.refresh().removed == 1
+    paths = {r["path"] for r in idx.query("SELECT path FROM files")}
+    assert "app/auth.py" not in paths
+
+
 def test_agent_tools(repo: Path, tmp_path: Path) -> None:
     intel = CodeIntel(repo, tmp_path / "tools.db")
     tools = {t.name: t for t in create_code_tools(intel)}

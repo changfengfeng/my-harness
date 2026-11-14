@@ -255,10 +255,13 @@ class LocateCodeTool(AgentTool[LocateCodeParams]):
             )
         )
         stopper = asyncio.create_task(signal.wait())
-        done, _ = await asyncio.wait({task, stopper}, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            done, _ = await asyncio.wait({task, stopper}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopper.cancel()
+            if not task.done():
+                task.cancel()
         if task not in done:
-            task.cancel()
             return AgentToolResult.text("Aborted.", details={"steps": steps})
-        stopper.cancel()
         report = task.result()
         return AgentToolResult.text(report, details={"steps": steps})

@@ -529,3 +529,31 @@ def test_parse_expansion_ignores_malformed_fields() -> None:
     assert _parse_expansion('{"queries": null, "identifiers": "abc"}', "req") == (["req"], [])
     assert _parse_expansion('{"queries": "retry", "identifiers": [null, "Foo.bar"]}', "req") == (["req"], ["Foo.bar"])
     assert _parse_expansion("[1, 2]", "req") == (["req"], [])
+
+
+def test_cancelled_locate_tool_cancels_subagent(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from my_harness.ai import get_model
+    from my_harness.codeintel import LocateCodeTool, locator
+
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def never(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(locator, "locate", never)
+    tool = LocateCodeTool(CodeIntel(repo, tmp_path / "c.db"), get_model("faux"))
+
+    async def main() -> None:
+        run = asyncio.create_task(tool.execute("1", tool.Params(request="x"), asyncio.Event()))
+        await started.wait()
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        await asyncio.wait_for(cancelled.wait(), 1)
+
+    asyncio.run(main())

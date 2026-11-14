@@ -527,11 +527,16 @@ def test_parse_expansion_ignores_malformed_fields() -> None:
     from my_harness.codeintel.locator import _parse_expansion
 
     assert _parse_expansion('{"queries": null, "identifiers": "abc"}', "req") == (["req"], [])
-    assert _parse_expansion('{"queries": "retry", "identifiers": [null, "Foo.bar"]}', "req") == (["req"], ["Foo.bar"])
+    assert _parse_expansion('{"queries": "retry", "identifiers": [null, "Foo.bar"]}', "req") == (
+        ["req"],
+        ["Foo.bar"],
+    )
     assert _parse_expansion("[1, 2]", "req") == (["req"], [])
 
 
-def test_cancelled_locate_tool_cancels_subagent(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cancelled_locate_tool_cancels_subagent(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from my_harness.ai import get_model
     from my_harness.codeintel import LocateCodeTool, locator
 
@@ -557,3 +562,21 @@ def test_cancelled_locate_tool_cancels_subagent(repo: Path, tmp_path: Path, monk
         await asyncio.wait_for(cancelled.wait(), 1)
 
     asyncio.run(main())
+
+
+def test_java_callers_through_inheriting_subclass(tmp_path: Path) -> None:
+    files = {
+        "Base.java": "class Base {\n    void helper() {\n    }\n}\n",
+        "Sub.java": "class Sub extends Base {\n}\n",
+        "Over.java": "class Over extends Base {\n    void helper() {\n    }\n}\n",
+        "Use.java": (
+            "class Use {\n    void viaBase(Base b) {\n        b.helper();\n    }\n\n"
+            "    void viaSub(Sub s) {\n        s.helper();\n    }\n\n"
+            "    void viaOver(Over o) {\n        o.helper();\n    }\n}\n"
+        ),
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).write_text(text)
+    q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
+    target = q.find_symbol("Base.helper")[0]
+    assert sorted(c.qualname for c in q.callers(target)[0]) == ["Use.viaBase", "Use.viaSub"]

@@ -488,13 +488,56 @@ class CodeQueries:
             frontier = [x for t in frontier for x in supers.get(t, [])]
         return chain
 
+    def _java_inheritors(self, h: Hit, depth: int = 3) -> list[str]:
+        """Subtypes of the method's class that inherit it without overriding (calls through them land here)."""
+        rows = self.index.query(
+            "SELECT p.id, p.name FROM symbols s JOIN symbols p ON p.id = s.parent_id WHERE s.id = ?", [h.id]
+        )
+        if not rows:
+            return []
+        seen = {rows[0]["id"]}
+        frontier = [rows[0]["name"]]
+        out: list[str] = []
+        for _ in range(depth):
+            if not frontier or len(out) > 200:
+                break
+            subs = self.index.query(
+                f"""SELECT DISTINCT s.id, s.name, s.signature FROM refs r JOIN symbols s ON s.id = r.symbol_id
+                    JOIN files f ON f.id = s.file_id
+                    WHERE r.name IN ({",".join("?" * len(frontier))}) AND s.kind IN ('class','interface','enum')
+                    AND f.lang = 'java' LIMIT 1000""",
+                frontier,
+            )
+            subs = [
+                r
+                for r in subs
+                if r["id"] not in seen
+                and set(java_supertypes(r["signature"] or "", r["name"])) & set(frontier)
+            ]
+            seen.update(r["id"] for r in subs)
+            overriding = set()
+            ids = [r["id"] for r in subs]
+            for k in range(0, len(ids), 400):
+                chunk = ids[k : k + 400]
+                overriding |= {
+                    r[0]
+                    for r in self.index.query(
+                        f"""SELECT DISTINCT parent_id FROM symbols WHERE name = ? AND kind = 'method'
+                            AND parent_id IN ({",".join("?" * len(chunk))})""",
+                        [h.name, *chunk],
+                    )
+                }
+            frontier = list(dict.fromkeys(r["name"] for r in subs if r["id"] not in overriding))
+            out += frontier
+        return list(dict.fromkeys(out))[:200]
+
     def _java_callers(self, h: Hit, limit: int) -> tuple[list[Hit], int] | None:
         """Callers through receivers typed as the method's class or one of its supertypes, then calls
         whose receiver type is unknown. None if the index has no typed references for this name."""
         owners = self._java_owner_chain(h)
         if not owners:
             return None
-        typed_names = [f"{o}.{h.name}" for o in owners]
+        typed_names = [f"{o}.{h.name}" for o in owners + self._java_inheritors(h)]
         typed = self.index.query(
             f"""SELECT {SYMBOL_COLS} FROM refs r JOIN symbols s ON s.id = r.symbol_id JOIN files f ON f.id = r.file_id
                 WHERE r.name IN ({",".join("?" * len(typed_names))}) AND s.id != ? LIMIT 3000""",

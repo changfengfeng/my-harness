@@ -99,9 +99,11 @@ def java_supertypes(signature: str, name: str) -> list[str]:
 
 def _path_filter(path: str | None) -> tuple[str, list[str]]:
     """SQL condition for a path prefix or glob."""
-    if not path:
+    path = (path or "").strip()
+    while path.startswith("./"):
+        path = path[2:]
+    if path in ("", ".", "/"):
         return "", []
-    path = path.strip().lstrip("./") if path.startswith("./") else path.strip()
     if any(c in path for c in "*?["):
         return " AND f.path GLOB ?", [path]
     return " AND (f.path = ? OR f.path GLOB ?)", [path.rstrip("/"), path.rstrip("/") + "/*"]

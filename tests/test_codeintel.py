@@ -513,3 +513,11 @@ def test_queries_reread_source_after_refresh(repo: Path, tmp_path: Path) -> None
     (repo / "app" / "auth.py").write_text("# rewritten\n")
     idx.refresh()
     assert q.lines("app/auth.py") == ["# rewritten"]
+
+
+def test_current_directory_scope_matches_everything(index: CodeIndex) -> None:
+    q = CodeQueries(index)
+    everything = [h.path for h in q.search("password hash")]
+    assert everything
+    for scope in (".", "./", " ./ "):
+        assert [h.path for h in q.search("password hash", path=scope)] == everything

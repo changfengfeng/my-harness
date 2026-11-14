@@ -313,6 +313,7 @@ class CodeIndex:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self._init_schema()
         self._last_refresh = 0.0
+        self.generation = 0  # bumped whenever a refresh changes the indexed files
 
     def _init_schema(self) -> None:
         row = None
@@ -387,6 +388,7 @@ class CodeIndex:
             self._store(self._analyze(todo, progress))
             self._resolve_imports()
             self._compute_ranks()
+            self.generation += 1
         self._last_refresh = time.monotonic()
         stats = self.stats()
         stats.parsed, stats.removed, stats.seconds = len(todo), len(removed), time.monotonic() - t0

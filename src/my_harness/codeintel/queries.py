@@ -126,8 +126,11 @@ class CodeQueries:
     def __init__(self, index: CodeIndex):
         self.index = index
         self._lines_cache: dict[str, list[str]] = {}
+        self._cache_generation = index.generation
 
     def lines(self, path: str) -> list[str]:
+        if self._cache_generation != self.index.generation:
+            self.reset_cache()
         if path not in self._lines_cache:
             if len(self._lines_cache) > 64:
                 self._lines_cache.clear()
@@ -136,6 +139,7 @@ class CodeQueries:
 
     def reset_cache(self) -> None:
         self._lines_cache.clear()
+        self._cache_generation = self.index.generation
 
     # -- search ----------------------------------------------------------------
 

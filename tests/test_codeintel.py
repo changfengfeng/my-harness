@@ -503,3 +503,13 @@ def test_failed_store_rolls_back(repo: Path, tmp_path: Path, monkeypatch: pytest
     assert not idx.db.in_transaction
     monkeypatch.undo()
     assert idx.refresh().parsed == 1
+
+
+def test_queries_reread_source_after_refresh(repo: Path, tmp_path: Path) -> None:
+    idx = CodeIndex(repo, tmp_path / "gen.db")
+    idx.refresh()
+    q = CodeQueries(idx)
+    assert q.lines("app/auth.py")
+    (repo / "app" / "auth.py").write_text("# rewritten\n")
+    idx.refresh()
+    assert q.lines("app/auth.py") == ["# rewritten"]

@@ -8,6 +8,8 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.50",
     "pydantic>=2.7",
+    "tree-sitter>=0.24,<0.26",
+    "tree-sitter-java>=0.23.5,<0.24",
 ]
 
 [project.scripts]

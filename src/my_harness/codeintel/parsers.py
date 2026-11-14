@@ -1,7 +1,7 @@
 """Per-language symbol, import and reference extraction.
 
-Python is parsed with `ast`. Other languages use line-oriented patterns plus a brace / indentation
-scanner to find where each definition ends. That is less precise than a real grammar but has no
+Python is parsed with `ast` and Java with a tree-sitter syntax tree (see `java_lst`). Other
+languages use line-oriented patterns plus a brace / indentation scanner to find where each definition ends. That is less precise than a real grammar but has no
 dependencies, handles broken code, and is fast enough to index millions of lines.
 """
 
@@ -198,6 +198,7 @@ class Symbol:
     doc: str = ""
     parent: int | None = None  # index into ParsedFile.symbols
     qualname: str = ""
+    refs: set[str] = field(default_factory=set)  # extra references, e.g. type-qualified calls
 
 
 @dataclass
@@ -208,6 +209,7 @@ class ParsedFile:
     symbols: list[Symbol] = field(default_factory=list)
     imports: list[tuple[str, int]] = field(default_factory=list)  # (target, line)
     error: str | None = None
+    explicit_parents: bool = False  # parents come from a syntax tree, not range containment
 
 
 def detect_language(path: str) -> str | None:
@@ -230,6 +232,14 @@ def parse_source(path: str, text: str, lang: str) -> ParsedFile:
                 pf.symbols.clear()
                 pf.imports.clear()
                 _parse_generic(pf, lines, "python")
+        elif lang == "java" and path.endswith(".java") and _java_lst_available():
+            try:
+                _parse_java_lst(pf, lines)
+            except (RecursionError, ValueError, UnicodeError):
+                pf.symbols.clear()
+                pf.imports.clear()
+                pf.explicit_parents = False
+                _parse_generic(pf, lines, "java")
         elif lang == "markdown":
             _parse_markdown(pf, lines)
         elif lang in NON_CODE:
@@ -243,15 +253,32 @@ def parse_source(path: str, text: str, lang: str) -> ParsedFile:
     return pf
 
 
+def _java_lst_available() -> bool:
+    from .java_lst import available
+
+    return available()
+
+
+def _parse_java_lst(pf: ParsedFile, lines: list[str]) -> None:
+    from .java_lst import parse_java
+
+    parse_java(pf, lines)
+
+
 def _finish(pf: ParsedFile) -> None:
     """Sort, assign parents by range containment, and build qualified names."""
+    parents = {id(s): pf.symbols[s.parent] for s in pf.symbols if s.parent is not None}
     pf.symbols.sort(key=lambda s: (s.start, -s.end))
+    position = {id(s): i for i, s in enumerate(pf.symbols)}
+    for s in pf.symbols:
+        if id(s) in parents:
+            s.parent = position[id(parents[id(s)])]
     stack: list[int] = []
     for i, sym in enumerate(pf.symbols):
         sym.end = max(sym.end, sym.line)
         while stack and pf.symbols[stack[-1]].end < sym.start:
             stack.pop()
-        if sym.parent is None and stack and pf.symbols[stack[-1]].end >= sym.end:
+        if sym.parent is None and not pf.explicit_parents and stack and pf.symbols[stack[-1]].end >= sym.end:
             sym.parent = stack[-1]
         if sym.parent is not None:
             parent = pf.symbols[sym.parent]

@@ -289,6 +289,10 @@ def related_report(q: CodeQueries, target: str, limit: int) -> str | None:
         if callers:
             out.append(f"\nUsed by ({total} scopes mention {h.name!r}; most likely first):")
             out.extend(f"  {c.header()}" for c in callers)
+        impls = q.overrides(h, limit)
+        if impls:
+            out.append("\nOverridden / implemented in:")
+            out.extend(f"  {c.header()}" for c in impls)
         subs = q.subtypes(h, limit)
         if subs:
             out.append("\nSubclasses / implementations:")

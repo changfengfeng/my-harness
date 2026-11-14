@@ -27,7 +27,7 @@ from pathlib import Path
 from .parsers import NON_CODE, ParsedFile, detect_language, identifiers, parse_source
 from .tokens import index_text, tokenize
 
-SCHEMA_VERSION = "2"  # bump when the schema or the parser output changes: forces a rebuild
+SCHEMA_VERSION = "3"  # bump when the schema or the parser output changes: forces a rebuild
 SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".mypy_cache", ".pytest_cache",
     ".ruff_cache", ".tox", ".next", ".nuxt", "coverage", "target", ".gradle", ".idea", ".vscode", "bower_components",
@@ -247,7 +247,7 @@ def analyze_file(root: str, rel: str) -> FileRecord | None:
                 doc=s.doc,
                 parent=s.parent,
                 body=index_text(body, MAX_BODY_TOKENS),
-                refs=sorted(identifiers(body) - {s.name}) if lang not in NON_CODE else [],
+                refs=sorted((identifiers(body) - {s.name}) | s.refs) if lang not in NON_CODE else [],
             )
         )
     return rec

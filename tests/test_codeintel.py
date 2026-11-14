@@ -330,3 +330,103 @@ def test_search_demotes_vendored_code(tmp_path: Path) -> None:
     q = CodeIntel(tmp_path, tmp_path / "v.db").ready_sync()
     assert q.search("retry backoff")[0].path == "pkg/retry.py"
     assert q.search("retry backoff", path="vendor")[0].path == "vendor/lib/retry.py"
+
+
+JAVA_FILES = {
+    "src/main/java/com/shop/repo/OrderRepository.java": """package com.shop.repo;
+
+public interface OrderRepository {
+    /** Persist an order. */
+    void save(Order order);
+}
+""",
+    "src/main/java/com/shop/repo/JdbcOrderRepository.java": """package com.shop.repo;
+
+public class JdbcOrderRepository implements OrderRepository {
+    @Override
+    public void save(Order order) {
+        jdbc.update("insert into orders", order.id());
+    }
+}
+""",
+    "src/main/java/com/shop/service/OrderService.java": """package com.shop.service;
+
+import com.shop.repo.OrderRepository;
+
+/**
+ * Places orders for customers.
+ */
+@Service
+public class OrderService {
+    private static final int MAX_ITEMS = 50;
+    private final OrderRepository repository;
+    private final AuditLog audit = new AuditLog();
+
+    @PostMapping("/orders")
+    public Order place(Cart cart,
+                       Customer customer) {
+        Order order = new Order(cart);
+        repository.save(order);
+        audit.save("placed");
+        cart.items().forEach(this::check);
+        return order;
+    }
+
+    private void check(Item item) {}
+
+    static class Validator { boolean ok() { return true; } }
+}
+""",
+    "src/main/java/com/shop/service/AuditLog.java": """package com.shop.service;
+
+public class AuditLog {
+    public void save(String event) {}
+}
+""",
+    "src/main/java/com/shop/cache/Cache.java": """package com.shop.cache;
+
+public class Cache {
+    public void save(Object key) {}
+    void warm(java.util.List<String> keys) { keys.forEach(k -> save(k)); }
+}
+""",
+}
+
+
+def test_java_syntax_tree_parser() -> None:
+    pf = parse_source(
+        "OrderService.java", JAVA_FILES["src/main/java/com/shop/service/OrderService.java"], "java"
+    )
+    syms = {s.qualname: s for s in pf.symbols}
+    assert pf.imports == [("com.shop.repo.OrderRepository", 3)]
+    cls = syms["OrderService"]
+    assert cls.kind == "class" and cls.start == 8 and cls.doc == "Places orders for customers."
+    place = syms["OrderService.place"]
+    assert (place.kind, place.start, place.end, place.line) == ("method", 14, 22, 15)
+    assert place.signature == '@PostMapping("/orders") public Order place(Cart cart, Customer customer)'
+    assert {"OrderRepository.save", "AuditLog.save", "Order.Order", "OrderService.check"} <= place.refs
+    assert "?.forEach" in place.refs
+    assert syms["OrderService.MAX_ITEMS"].kind == "variable"
+    assert "OrderService.repository" not in syms  # instance fields only feed type attribution
+    assert syms["OrderService.Validator.ok"].kind == "method"
+
+
+def test_java_typed_relations(tmp_path: Path) -> None:
+    for rel, text in JAVA_FILES.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
+    place = q.find_symbol("OrderService.place")[0]
+    callees = {c.qualname for c in q.callees(place)}
+    assert {"OrderRepository.save", "AuditLog.save", "OrderService.check"} <= callees
+    assert "Cache.save" not in callees
+    iface_save = q.find_symbol("OrderRepository.save")[0]
+    callers, _ = q.callers(iface_save)
+    assert [c.qualname for c in callers] == ["OrderService.place"]
+    impl_save = q.find_symbol("JdbcOrderRepository.save")[0]
+    assert [c.qualname for c in q.callers(impl_save)[0]] == ["OrderService.place"]
+    cache_save = q.find_symbol("Cache.save")[0]
+    assert [c.qualname for c in q.callers(cache_save)[0]] == ["Cache.warm"]
+    assert [o.qualname for o in q.overrides(iface_save)] == ["JdbcOrderRepository.save"]
+    assert "Overridden / implemented in" in related_report(q, "OrderRepository.save", 10)

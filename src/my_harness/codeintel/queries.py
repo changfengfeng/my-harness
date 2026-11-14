@@ -76,6 +76,27 @@ def _hit(r: sqlite3.Row, score: float = 0.0) -> Hit:
     )  # fmt: skip
 
 
+_GENERIC_RE = re.compile(r"<[^<>]*>")
+
+
+def java_supertypes(signature: str, name: str) -> list[str]:
+    """`class Foo<T> extends Base<T> implements a.b.I, J` -> [Base, I, J]."""
+    rest = signature.split(name, 1)[-1]
+    for _ in range(6):
+        if "<" not in rest:
+            break
+        rest = _GENERIC_RE.sub("", rest)
+    m = re.search(r"\b(?:extends|implements)\b(.*)", rest)
+    if not m:
+        return []
+    out = []
+    for part in re.split(r",|\bimplements\b|\bextends\b|\bpermits\b.*", m.group(1)):
+        ids = IDENT_RE.findall(part)
+        if ids:
+            out.append(ids[-1])
+    return out
+
+
 def _path_filter(path: str | None) -> tuple[str, list[str]]:
     """SQL condition for a path prefix or glob."""
     if not path:
@@ -340,6 +361,10 @@ class CodeQueries:
     def callers(self, h: Hit, limit: int = 15) -> tuple[list[Hit], int]:
         """Chunks that mention `h.name`, preferring those that can actually see the definition
         (same file, or a file importing the definition's file)."""
+        if h.lang == "java" and h.kind == "method":
+            typed = self._java_callers(h, limit)
+            if typed is not None:
+                return typed
         rows = self.index.query(
             f"""SELECT {SYMBOL_COLS} FROM refs r JOIN symbols s ON s.id = r.symbol_id JOIN files f ON f.id = r.file_id
                 WHERE r.name = ? AND s.id != ? LIMIT 3000""",
@@ -385,6 +410,8 @@ class CodeQueries:
                 "SELECT resolved_id FROM imports WHERE file_id = ? AND resolved_id IS NOT NULL", [h.file_id]
             )
         }
+        if h.lang == "java" and any("." in n for n in names):
+            return self._java_callees(h, names, imported, limit)
         found: dict[str, list[Hit]] = defaultdict(list)
         for i in range(0, len(names), 400):
             chunk = names[i : i + 400]
@@ -419,6 +446,193 @@ class CodeQueries:
             out.append((p, best))
         out.sort(key=lambda x: (-x[0], x[1].path, x[1].start))
         return [d for _, d in out[:limit]]
+
+    # -- Java: type-qualified references from the syntax tree (see java_lst) -----------------------
+
+    def _java_types(self, names: list[str]) -> dict[str, list[str]]:
+        """Supertype names of each named Java class/interface (all same-named definitions merged)."""
+        out: dict[str, list[str]] = defaultdict(list)
+        for i in range(0, len(names), 400):
+            chunk = names[i : i + 400]
+            rows = self.index.query(
+                f"""SELECT s.name, s.signature FROM symbols s JOIN files f ON f.id = s.file_id
+                    WHERE s.name IN ({",".join("?" * len(chunk))}) AND s.kind IN ('class','interface','enum')
+                    AND f.lang = 'java'""",
+                chunk,
+            )
+            for r in rows:
+                out[r["name"]] += java_supertypes(r["signature"] or "", r["name"])
+        return out
+
+    def _java_owner_chain(self, h: Hit, depth: int = 4) -> list[str]:
+        rows = self.index.query(
+            "SELECT p.name, p.signature FROM symbols s JOIN symbols p ON p.id = s.parent_id WHERE s.id = ?",
+            [h.id],
+        )
+        if not rows:
+            return []
+        chain = [rows[0]["name"]]
+        frontier = java_supertypes(rows[0]["signature"] or "", rows[0]["name"])
+        for _ in range(depth):
+            frontier = [t for t in dict.fromkeys(frontier) if t not in chain]
+            if not frontier or len(chain) > 24:
+                break
+            chain += frontier
+            supers = self._java_types(frontier)
+            frontier = [x for t in frontier for x in supers.get(t, [])]
+        return chain
+
+    def _java_callers(self, h: Hit, limit: int) -> tuple[list[Hit], int] | None:
+        """Callers through receivers typed as the method's class or one of its supertypes, then calls
+        whose receiver type is unknown. None if the index has no typed references for this name."""
+        owners = self._java_owner_chain(h)
+        if not owners:
+            return None
+        typed_names = [f"{o}.{h.name}" for o in owners]
+        typed = self.index.query(
+            f"""SELECT {SYMBOL_COLS} FROM refs r JOIN symbols s ON s.id = r.symbol_id JOIN files f ON f.id = r.file_id
+                WHERE r.name IN ({",".join("?" * len(typed_names))}) AND s.id != ? LIMIT 3000""",
+            [*typed_names, h.id],
+        )
+        unknown = self.index.query(
+            f"""SELECT {SYMBOL_COLS} FROM refs r JOIN symbols s ON s.id = r.symbol_id JOIN files f ON f.id = r.file_id
+                WHERE r.name = ? AND s.id != ? LIMIT 3000""",
+            [f"?.{h.name}", h.id],
+        )
+        if not typed and not unknown:
+            lst = self.index.query(
+                "SELECT 1 FROM refs WHERE file_id = ? AND name GLOB '*.*' LIMIT 1", [h.file_id]
+            )
+            return ([], 0) if lst else None
+        importers = {
+            r[0]
+            for r in self.index.query(
+                "SELECT DISTINCT file_id FROM imports WHERE resolved_id = ?", [h.file_id]
+            )
+        }
+        same_dir = posixpath.dirname(h.path)
+        scored: dict[int, tuple[float, Hit]] = {}
+        for r in typed:
+            c = _hit(r)
+            vis = (
+                1.0
+                if c.file_id == h.file_id or c.file_id in importers or posixpath.dirname(c.path) == same_dir
+                else 0.0
+            )
+            scored[c.id] = (4.0 + vis + 0.5 * c.rank - (0.5 if c.is_test else 0), c)
+        for r in unknown:
+            c = _hit(r)
+            if c.id in scored:
+                continue
+            vis = 2.0 if c.file_id == h.file_id else 1.0 if c.file_id in importers else 0.0
+            scored[c.id] = (vis + 0.5 * c.rank - (0.5 if c.is_test else 0), c)
+        ranked = sorted(scored.values(), key=lambda x: -x[0])
+        likely = [c for sc, c in ranked if sc >= 0.9]
+        return (likely or [c for _, c in ranked])[:limit], len(scored)
+
+    def _java_callees(self, h: Hit, names: list[str], imported: set[int], limit: int) -> list[Hit]:
+        """Resolve `Type.method` references to that type's method (or an inherited one), `?.method`
+        by name with the usual ambiguity checks, and plain identifiers to types and constants only."""
+        same_dir = posixpath.dirname(h.path)
+
+        def plaus(d: Hit) -> float:
+            return (
+                (3 if d.file_id == h.file_id else 2 if d.file_id in imported else 0)
+                + (1.5 if posixpath.dirname(d.path) == same_dir else 0)
+                + d.rank
+                - (1 if d.is_test and not h.is_test else 0)
+            )
+
+        pairs = {tuple(n.split(".", 1)) for n in names if "." in n}
+        typed = {(t, m) for t, m in pairs if t != "?"}
+        unknown = {m for t, m in pairs if t == "?"}
+        out: dict[int, tuple[float, Hit]] = {}
+        resolved_methods: set[str] = set()
+
+        def lookup(want: set[tuple[str, str]]) -> dict[tuple[str, str], list[Hit]]:
+            found: dict[tuple[str, str], list[Hit]] = defaultdict(list)
+            items = sorted(want)
+            for i in range(0, len(items), 300):
+                chunk = items[i : i + 300]
+                types = sorted({t for t, _ in chunk})
+                methods = sorted({m for _, m in chunk})
+                rows = self.index.query(
+                    f"""SELECT {SYMBOL_COLS}, p.name AS owner FROM symbols s JOIN symbols p ON p.id = s.parent_id
+                        JOIN files f ON f.id = s.file_id
+                        WHERE s.name IN ({",".join("?" * len(methods))}) AND p.name IN ({",".join("?" * len(types))})
+                        AND s.kind = 'method' AND f.lang = 'java' AND s.id != ?""",
+                    [*methods, *types, h.id],
+                )
+                for r in rows:
+                    if (r["owner"], r["name"]) in want:
+                        found[(r["owner"], r["name"])].append(_hit(r))
+            return found
+
+        pending = {(t, m): t for t, m in typed}  # (type searched, method) -> type named at call site
+        for _ in range(3):
+            if not pending:
+                break
+            found = lookup(set(pending))
+            nxt: dict[tuple[str, str], str] = {}
+            for key, defs in found.items():
+                best = max(defs, key=plaus)
+                p = plaus(best)
+                if p < 1.5 and len({d.file_id for d in defs}) > 1:
+                    continue  # several unrelated classes share this name and none is visible here
+                out.setdefault(best.id, (3 + p, best))
+                resolved_methods.add(key[1])
+            missing = [k for k in pending if k not in found]
+            supers = self._java_types(sorted({t for t, _ in missing})) if missing else {}
+            for t, m in missing:
+                for s in supers.get(t, []):
+                    nxt.setdefault((s, m), pending[(t, m)])
+            pending = nxt
+        plain = [n for n in names if "." not in n]
+        rows: list[sqlite3.Row] = []
+        lookups = [
+            (plain, "('class','interface','enum','variable')"),
+            (sorted(unknown - resolved_methods), "('method')"),
+        ]
+        for group, kinds in lookups:
+            for i in range(0, len(group), 400):
+                chunk = group[i : i + 400]
+                rows = self.index.query(
+                    f"""SELECT {SYMBOL_COLS} FROM symbols s JOIN files f ON f.id = s.file_id
+                        WHERE s.name IN ({",".join("?" * len(chunk))}) AND s.kind IN {kinds}
+                        AND f.lang = 'java' AND s.id != ?""",
+                    [*chunk, h.id],
+                )
+                by_name: dict[str, list[Hit]] = defaultdict(list)
+                for r in rows:
+                    by_name[r["name"]].append(_hit(r))
+                for name, defs in by_name.items():
+                    best = max(defs, key=plaus)
+                    p = plaus(best)
+                    if best.kind == "variable" and p < 2:
+                        continue
+                    if p < 2 and (len({d.file_id for d in defs}) > 1 or not _distinctive(name)):
+                        continue
+                    out.setdefault(best.id, (p, best))
+        ranked = sorted(out.values(), key=lambda x: (-x[0], x[1].path, x[1].start))
+        return [d for _, d in ranked[:limit]]
+
+    def overrides(self, h: Hit, limit: int = 15) -> list[Hit]:
+        """Same-named methods in subclasses / implementations of the method's class."""
+        if h.kind != "method":
+            return []
+        rows = self.index.query("SELECT parent_id FROM symbols WHERE id = ?", [h.id])
+        parent = self.symbol_by_id(rows[0][0]) if rows and rows[0][0] else None
+        if parent is None:
+            return []
+        subs = self.subtypes(parent, 50)
+        if not subs:
+            return []
+        rows = self.index.query(
+            f"""SELECT {SYMBOL_COLS} FROM symbols s JOIN files f ON f.id = s.file_id
+                WHERE s.name = ? AND s.kind = 'method' AND s.parent_id IN ({",".join("?" * len(subs))})""",
+            [h.name, *(x.id for x in subs)],
+        )
+        return sorted((_hit(r) for r in rows), key=lambda x: (x.is_test, -x.rank, x.path))[:limit]
 
     def subtypes(self, h: Hit, limit: int = 15) -> list[Hit]:
         if h.kind not in ("class", "interface", "type", "impl"):

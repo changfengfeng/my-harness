@@ -430,3 +430,26 @@ def test_java_typed_relations(tmp_path: Path) -> None:
     assert [c.qualname for c in q.callers(cache_save)[0]] == ["Cache.warm"]
     assert [o.qualname for o in q.overrides(iface_save)] == ["JdbcOrderRepository.save"]
     assert "Overridden / implemented in" in related_report(q, "OrderRepository.save", 10)
+
+
+def test_java_self_calls_bind_to_declaring_class(tmp_path: Path) -> None:
+    files = {
+        "Store.java": "interface Store {\n    void write(String s);\n}\n",
+        "Base.java": "abstract class Base implements Store {\n    void helper() {\n    }\n}\n",
+        "AzureStore.java": (
+            "class AzureStore extends Base {\n    public void write(String s) {\n        helper();\n    }\n}\n"
+        ),
+        "GcsStore.java": (
+            "class GcsStore extends Base {\n    public void write(String s) {\n    }\n\n"
+            '    void upload() {\n        write("x");\n        this.write("y");\n    }\n}\n'
+        ),
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).write_text(text)
+    q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
+    azure_write = next(h for h in q.find_symbol("write") if h.qualname == "AzureStore.write")
+    assert q.callers(azure_write)[0] == []
+    gcs_write = next(h for h in q.find_symbol("write") if h.qualname == "GcsStore.write")
+    assert [c.qualname for c in q.callers(gcs_write)[0]] == ["GcsStore.upload"]
+    helper = q.find_symbol("Base.helper")[0]
+    assert [c.qualname for c in q.callers(helper)[0]] == ["AzureStore.write"]

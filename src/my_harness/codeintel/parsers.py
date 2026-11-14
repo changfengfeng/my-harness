@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
@@ -305,7 +306,9 @@ def _signature(lines: list[str], line: int, closer: str = ":") -> str:
 
 
 def _parse_python(pf: ParsedFile, text: str, lines: list[str]) -> None:
-    tree = ast.parse(text)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        tree = ast.parse(text)
 
     def visit(body: list[ast.stmt], parent: int | None, in_class: bool) -> None:
         for node in body:

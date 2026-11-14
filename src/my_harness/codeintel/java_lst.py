@@ -54,6 +54,7 @@ class _Frame:
     sym: Symbol
     idx: int
     fields: dict[str, str] = field(default_factory=dict)
+    methods: set[str] = field(default_factory=set)
 
 
 def parse_java(pf: ParsedFile, lines: list[str]) -> None:
@@ -145,6 +146,8 @@ class _Walker:
         for p in params.named_children if params is not None else []:
             self._bind(p, frame.fields)
         for m in members:
+            if m.type in METHOD_NODES and (mn := m.child_by_field_name("name")) is not None:
+                frame.methods.add(self.text(mn))
             if m.type in FIELD_NODES:
                 t = _type_name(m.child_by_field_name("type"))
                 for d in m.children_by_field_name("declarator"):
@@ -264,16 +267,22 @@ class _Walker:
             if name_node is None:
                 continue
             name = self.text(name_node)
-            for rt in self._receiver(obj, frames, scope) or [UNKNOWN]:
+            for rt in self._receiver(obj, frames, scope, name) or [UNKNOWN]:
                 owner.refs.add(f"{rt}.{name}")
 
-    def _receiver(self, obj: Any | None, frames: list[_Frame], scope: dict[str, str]) -> list[str]:
+    def _receiver(
+        self, obj: Any | None, frames: list[_Frame], scope: dict[str, str], method: str
+    ) -> list[str]:
         cur = frames[-1]
-        if obj is None:  # unqualified: this class, its supertypes or an enclosing class
-            return list(dict.fromkeys([cur.name, *cur.supers, *(f.name for f in frames[:-1])]))
+        if obj is None or obj.type == "this":
+            # A method declared in this (or, unqualified, an enclosing) class binds there; otherwise
+            # it is inherited, so any supertype may declare it.
+            for f in reversed(frames if obj is None else frames[-1:]):
+                if method in f.methods:
+                    return [f.name]
+            outer = [f.name for f in frames[:-1]] if obj is None else []
+            return list(dict.fromkeys([cur.name, *cur.supers, *outer]))
         t = obj.type
-        if t == "this":
-            return [cur.name, *cur.supers]
         if t == "super":
             return cur.supers[:1] or []
         if t == "identifier":

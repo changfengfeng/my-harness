@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -485,3 +486,20 @@ def test_java_untyped_receivers_need_visibility(tmp_path: Path) -> None:
     q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
     target = q.find_symbol("Methods.getMethod")[0]
     assert [c.qualname for c in q.callers(target)[0]] == ["Gen.run"]
+
+
+def test_failed_store_rolls_back(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    idx = CodeIndex(repo, tmp_path / "rb.db")
+    idx.refresh()
+    (repo / "app" / "extra.py").write_text("def extra():\n    return 1\n")
+
+    def boom(records):
+        idx.db.execute("BEGIN")
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: files.path")
+
+    monkeypatch.setattr(idx, "_store", boom)
+    with pytest.raises(sqlite3.IntegrityError):
+        idx.refresh()
+    assert not idx.db.in_transaction
+    monkeypatch.undo()
+    assert idx.refresh().parsed == 1

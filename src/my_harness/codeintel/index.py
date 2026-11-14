@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -284,6 +284,22 @@ def _analyze_batch(root: str, rels: list[str]) -> list[FileRecord | None]:
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _process_lock(db_path: Path) -> Iterator[None]:
+    """Serialize refreshes of one index across processes (no-op where flock is unavailable)."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    with open(f"{db_path}.lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 class CodeIndex:
     def __init__(self, root: Path, db_path: Path | None = None, workers: int | None = None):
         self.root = root.resolve()
@@ -331,41 +347,50 @@ class CodeIndex:
         with self.lock:
             if not force and min_interval and time.monotonic() - self._last_refresh < min_interval:
                 return self.stats()
-            t0 = time.monotonic()
-            if force:  # dropping is much faster than deleting every row
-                self._drop_tables()
-                self._init_schema()
-                self.db.execute("VACUUM")
-            current = list_source_files(self.root)
-            known = {
-                r["path"]: (r["id"], r["mtime_ns"], r["size"])
-                for r in self.db.execute("SELECT id, path, mtime_ns, size FROM files")
-            }
-            todo: list[str] = []
-            gone: set[str] = set()
-            for rel in current:
-                old = known.get(rel)
-                if force or old is None:
-                    todo.append(rel)
-                    continue
+            with _process_lock(self.db_path):
                 try:
-                    st = os.stat(self.root / rel)
-                except OSError:  # listed by git but deleted from the working tree
-                    gone.add(rel)
-                    continue
-                if st.st_mtime_ns != old[1] or st.st_size != old[2]:
-                    todo.append(rel)
-            current_set = set(current) - gone
-            removed = [fid for p, (fid, _, _) in known.items() if p not in current_set]
-            if todo or removed:
-                self._delete_files(removed + [known[p][0] for p in todo if p in known])
-                self._store(self._analyze(todo, progress))
-                self._resolve_imports()
-                self._compute_ranks()
-            self._last_refresh = time.monotonic()
-            stats = self.stats()
-            stats.parsed, stats.removed, stats.seconds = len(todo), len(removed), time.monotonic() - t0
-            return stats
+                    return self._refresh(force, progress)
+                except BaseException:
+                    if self.db.in_transaction:
+                        self.db.execute("ROLLBACK")
+                    raise
+
+    def _refresh(self, force: bool, progress: Callable[[int, int], None] | None) -> IndexStats:
+        t0 = time.monotonic()
+        if force:  # dropping is much faster than deleting every row
+            self._drop_tables()
+            self._init_schema()
+            self.db.execute("VACUUM")
+        current = list_source_files(self.root)
+        known = {
+            r["path"]: (r["id"], r["mtime_ns"], r["size"])
+            for r in self.db.execute("SELECT id, path, mtime_ns, size FROM files")
+        }
+        todo: list[str] = []
+        gone: set[str] = set()
+        for rel in current:
+            old = known.get(rel)
+            if force or old is None:
+                todo.append(rel)
+                continue
+            try:
+                st = os.stat(self.root / rel)
+            except OSError:  # listed by git but deleted from the working tree
+                gone.add(rel)
+                continue
+            if st.st_mtime_ns != old[1] or st.st_size != old[2]:
+                todo.append(rel)
+        current_set = set(current) - gone
+        removed = [fid for p, (fid, _, _) in known.items() if p not in current_set]
+        if todo or removed:
+            self._delete_files(removed + [known[p][0] for p in todo if p in known])
+            self._store(self._analyze(todo, progress))
+            self._resolve_imports()
+            self._compute_ranks()
+        self._last_refresh = time.monotonic()
+        stats = self.stats()
+        stats.parsed, stats.removed, stats.seconds = len(todo), len(removed), time.monotonic() - t0
+        return stats
 
     def _analyze(self, rels: list[str], progress: Callable[[int, int], None] | None) -> Iterable[FileRecord]:
         root = str(self.root)

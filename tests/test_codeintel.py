@@ -580,3 +580,25 @@ def test_java_callers_through_inheriting_subclass(tmp_path: Path) -> None:
     q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
     target = q.find_symbol("Base.helper")[0]
     assert sorted(c.qualname for c in q.callers(target)[0]) == ["Use.viaBase", "Use.viaSub"]
+
+
+def test_java_inheritors_ignore_unrelated_same_named_base(tmp_path: Path) -> None:
+    files = {
+        "a/Base.java": "package a;\nclass Base {\n    void helper() {\n    }\n}\n",
+        "a/Sub.java": "package a;\nclass Sub extends Base {\n}\n",
+        "b/Base.java": "package b;\nclass Base {\n    void helper() {\n    }\n}\n",
+        "b/Other.java": "package b;\nclass Other extends Base {\n}\n",
+        "c/Use.java": (
+            "package c;\nimport a.Sub;\nimport b.Other;\nclass Use {\n"
+            "    void viaSub(Sub s) {\n        s.helper();\n    }\n\n"
+            "    void viaOther(Other o) {\n        o.helper();\n    }\n}\n"
+        ),
+    }
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    q = CodeIntel(tmp_path, tmp_path / "java.db").ready_sync()
+    target = next(h for h in q.find_symbol("Base.helper") if h.path == "a/Base.java")
+    assert q._java_inheritors(target) == ["Sub"]
+    assert [c.qualname for c in q.callers(target)[0]] == ["Use.viaSub"]

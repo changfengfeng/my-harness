@@ -489,31 +489,60 @@ class CodeQueries:
         return chain
 
     def _java_inheritors(self, h: Hit, depth: int = 3) -> list[str]:
-        """Subtypes of the method's class that inherit it without overriding (calls through them land here)."""
+        """Subtypes of the method's class that inherit it without overriding (calls through them land here).
+        A subtype only counts if its file can see the supertype's file (same file/package or an import),
+        so same-named classes in unrelated packages do not merge."""
         rows = self.index.query(
-            "SELECT p.id, p.name FROM symbols s JOIN symbols p ON p.id = s.parent_id WHERE s.id = ?", [h.id]
+            """SELECT p.id, p.name, f.id AS file_id, f.path FROM symbols s JOIN symbols p ON p.id = s.parent_id
+               JOIN files f ON f.id = p.file_id WHERE s.id = ?""",
+            [h.id],
         )
         if not rows:
             return []
         seen = {rows[0]["id"]}
-        frontier = [rows[0]["name"]]
+        frontier: dict[str, set[tuple[int, str]]] = {
+            rows[0]["name"]: {(rows[0]["file_id"], posixpath.dirname(rows[0]["path"]))}
+        }
         out: list[str] = []
         for _ in range(depth):
             if not frontier or len(out) > 200:
                 break
+            names = list(frontier)
             subs = self.index.query(
-                f"""SELECT DISTINCT s.id, s.name, s.signature FROM refs r JOIN symbols s ON s.id = r.symbol_id
-                    JOIN files f ON f.id = s.file_id
-                    WHERE r.name IN ({",".join("?" * len(frontier))}) AND s.kind IN ('class','interface','enum')
+                f"""SELECT DISTINCT s.id, s.name, s.signature, f.id AS file_id, f.path FROM refs r
+                    JOIN symbols s ON s.id = r.symbol_id JOIN files f ON f.id = s.file_id
+                    WHERE r.name IN ({",".join("?" * len(names))}) AND s.kind IN ('class','interface','enum')
                     AND f.lang = 'java' LIMIT 1000""",
-                frontier,
+                names,
             )
-            subs = [
-                r
-                for r in subs
-                if r["id"] not in seen
-                and set(java_supertypes(r["signature"] or "", r["name"])) & set(frontier)
-            ]
+            target_files = {fid for locs in frontier.values() for fid, _ in locs}
+            importing: set[tuple[int, int]] = set()
+            sub_files = list({r["file_id"] for r in subs})
+            for k in range(0, len(sub_files), 400):
+                chunk = sub_files[k : k + 400]
+                importing |= {
+                    (r[0], r[1])
+                    for r in self.index.query(
+                        f"""SELECT file_id, resolved_id FROM imports WHERE file_id IN ({",".join("?" * len(chunk))})
+                            AND resolved_id IS NOT NULL""",
+                        chunk,
+                    )
+                    if r[1] in target_files
+                }
+
+            def visible(
+                r: sqlite3.Row,
+                frontier: dict[str, set[tuple[int, str]]] = frontier,
+                importing: set[tuple[int, int]] = importing,
+            ) -> bool:
+                d = posixpath.dirname(r["path"])
+                return any(
+                    fid == r["file_id"] or sd == d or (r["file_id"], fid) in importing
+                    for t in java_supertypes(r["signature"] or "", r["name"])
+                    for fid, sd in frontier.get(t, ())
+                )
+
+            subs = [r for r in subs if r["id"] not in seen and visible(r)]
             seen.update(r["id"] for r in subs)
             overriding = set()
             ids = [r["id"] for r in subs]
@@ -527,8 +556,11 @@ class CodeQueries:
                         [h.name, *chunk],
                     )
                 }
-            frontier = list(dict.fromkeys(r["name"] for r in subs if r["id"] not in overriding))
-            out += frontier
+            frontier = defaultdict(set)
+            for r in subs:
+                if r["id"] not in overriding:
+                    frontier[r["name"]].add((r["file_id"], posixpath.dirname(r["path"])))
+            out += list(frontier)
         return list(dict.fromkeys(out))[:200]
 
     def _java_callers(self, h: Hit, limit: int) -> tuple[list[Hit], int] | None:

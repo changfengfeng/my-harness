@@ -521,3 +521,11 @@ def test_current_directory_scope_matches_everything(index: CodeIndex) -> None:
     assert everything
     for scope in (".", "./", " ./ "):
         assert [h.path for h in q.search("password hash", path=scope)] == everything
+
+
+def test_parse_expansion_ignores_malformed_fields() -> None:
+    from my_harness.codeintel.locator import _parse_expansion
+
+    assert _parse_expansion('{"queries": null, "identifiers": "abc"}', "req") == (["req"], [])
+    assert _parse_expansion('{"queries": "retry", "identifiers": [null, "Foo.bar"]}', "req") == (["req"], ["Foo.bar"])
+    assert _parse_expansion("[1, 2]", "req") == (["req"], [])

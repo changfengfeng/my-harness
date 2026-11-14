@@ -85,8 +85,15 @@ def _parse_expansion(text: str, request: str) -> tuple[list[str], list[str]]:
         data = json.loads(m.group(0)) if m else {}
     except json.JSONDecodeError:
         data = {}
-    queries = [str(q) for q in data.get("queries", []) if str(q).strip()][:8]
-    idents = [str(i) for i in data.get("identifiers", []) if re.fullmatch(r"[\w.:$#-]+", str(i))][:8]
+    if not isinstance(data, dict):
+        data = {}
+
+    def strings(key: str) -> list[str]:
+        val = data.get(key)
+        return [str(x).strip() for x in val if isinstance(x, (str, int, float))] if isinstance(val, list) else []
+
+    queries = [q for q in strings("queries") if q][:8]
+    idents = [i for i in strings("identifiers") if re.fullmatch(r"[\w.:$#-]+", i)][:8]
     return queries or [request], idents
 
 
